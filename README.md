@@ -1,6 +1,6 @@
 # piper_ws
 
-Workspace educativo para prácticas guiadas con el brazo PiPER en ROS 2. Este repositorio reúne únicamente la base de simulación de la primera práctica; no copia el desarrollo completo de `piper_NXL`.
+Workspace educativo para prácticas guiadas con el brazo PiPER en ROS 2. Este repositorio reúne únicamente la base de simulación de la primera práctica.
 
 ## Práctica 1: iniciar PiPER en Gazebo y mover una articulación
 
@@ -14,8 +14,6 @@ La guía de la práctica explicará los pasos y los fragmentos de código. Este 
 - ROS 2 Jazzy
 - Gazebo Harmonic, integrado con ROS mediante `ros_gz`
 - Equipo de escritorio capaz de ejecutar Gazebo con interfaz gráfica
-
-La combinación Ubuntu 24.04 + ROS 2 Jazzy + Gazebo Harmonic es la combinación recomendada por la [documentación de Gazebo para ROS](https://gazebosim.org/docs/harmonic/ros_installation/). Esta práctica no requiere el brazo físico, CAN, MoveIt ni una GUI de teleoperación.
 
 ## Paquetes incluidos
 
@@ -64,29 +62,3 @@ colcon build --symlink-install --packages-up-to piper_bringup
 source install/setup.bash
 ros2 launch piper_bringup piper_gazebo.launch.py
 ```
-
-Deja esta terminal abierta. Gazebo mostrará el brazo en el mundo de práctica.
-
-## Enviar una primera trayectoria articular
-
-En otra terminal, carga los mismos entornos:
-
-```bash
-cd ~/piper_ws
-source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-```
-
-Envía una trayectoria que mueve `joint1` a una posición pequeña y mantiene las demás articulaciones en cero:
-
-```bash
-ros2 action send_goal /arm_controller/follow_joint_trajectory \
-  control_msgs/action/FollowJointTrajectory \
-  "{trajectory: {joint_names: [joint1, joint2, joint3, joint4, joint5, joint6], points: [{positions: [0.10, 0.0, 0.0, 0.0, 0.0, 0.0], time_from_start: {sec: 3, nanosec: 0}}]}}"
-```
-
-La acción usa las seis articulaciones configuradas para `arm_controller`; solo cambia la primera. Para volver a la posición inicial, repite el comando con todas las posiciones en `0.0`. El movimiento se aplica únicamente al modelo simulado.
-
-## Estado de esta base
-
-La estructura y los comandos están preparados para el entorno Jazzy y Harmonic. Aún falta validar la compilación y el primer lanzamiento en una instalación limpia de Ubuntu 24.04 antes de presentar la práctica como verificada.
