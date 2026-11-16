@@ -83,12 +83,48 @@ def generate_launch_description():
         ],
         output='screen',
     )
+    gripper_controller = Node(
+        package='controller_manager',
+        executable='spawner',
+        name='gripper_controller_spawner',
+        arguments=[
+            'gripper_controller',
+            '--controller-manager', '/controller_manager',
+            '--controller-manager-timeout', '60',
+        ],
+        output='screen',
+    )
+
+    gripper8_controller = Node(
+        package='controller_manager',
+        executable='spawner',
+        name='gripper8_controller_spawner',
+        arguments=[
+            'gripper8_controller',
+            '--controller-manager', '/controller_manager',
+            '--controller-manager-timeout', '60',
+        ],
+        output='screen',
+    )
 
     start_joint_states = RegisterEventHandler(
         OnProcessExit(target_action=spawn_robot, on_exit=[joint_state_broadcaster])
     )
     start_arm_controller = RegisterEventHandler(
         OnProcessExit(target_action=joint_state_broadcaster, on_exit=[arm_controller])
+    )
+    start_gripper_controller = RegisterEventHandler(
+        OnProcessExit(
+            target_action=arm_controller,
+            on_exit=[gripper_controller],
+        )
+    )
+
+    start_gripper8_controller = RegisterEventHandler(
+        OnProcessExit(
+            target_action=gripper_controller,
+            on_exit=[gripper8_controller],
+        )
     )
 
     return LaunchDescription([
@@ -98,4 +134,6 @@ def generate_launch_description():
         TimerAction(period=5.0, actions=[spawn_robot]),
         start_joint_states,
         start_arm_controller,
+        start_gripper_controller,
+        start_gripper8_controller,
     ])
