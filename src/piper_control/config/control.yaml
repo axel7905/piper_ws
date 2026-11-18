@@ -1,0 +1,17 @@
+piper_control:
+  ros__parameters:
+    command_topic: /piper/cmd_vel
+    state_topic: /joint_states
+    trajectory_topic: /arm_controller/joint_trajectory
+    status_topic: /piper/control_status
+    gripper_trajectory_topic: /gripper_controller/joint_trajectory
+    gripper_max_velocity: 0.08
+    gripper_max_width: 0.072
+    publish_rate: 30.0
+    command_timeout: 0.3
+    state_timeout: 0.5
+    trajectory_duration: 0.12
+    max_tracking_error: 0.15
+    arm_max_velocity: [0.35, 0.35, 0.35, 0.35, 0.35, 0.35]
+    arm_lower_limits: [-2.618, 0.0, -2.967, -1.745, -1.22, -2.0944]
+    arm_upper_limits: [2.618, 3.14, 0.0, 1.745, 1.22, 2.0944]
