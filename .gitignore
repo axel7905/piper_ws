@@ -2,6 +2,7 @@
 /install*/
 /log*/
 /.venv/
+/.venv-ik/
 /piper/
 /__pycache__/
 *.py[cod]

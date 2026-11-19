@@ -4,13 +4,17 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32MultiArray, String
+from rclpy.time import Time
+from std_srvs.srv import SetBool
+from tf2_ros import Buffer, TransformException, TransformListener
+from scipy.spatial.transform import Rotation
 
 import time
 import math
-
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QEvent
 from PyQt5.QtWidgets import (
     QApplication,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -18,7 +22,6 @@ from PyQt5.QtWidgets import (
     QSlider,
     QVBoxLayout,
     QWidget,
-    
 )
 
 
@@ -29,6 +32,15 @@ JOINTS = [
     ("J4", "WRIST 1"),
     ("J5", "WRIST 2"),
     ("J6", "WRIST 3"),
+]
+
+CARTESIAN_AXES = [
+    ("Z", "TRASLACIÓN"),
+    ("Y", "TRASLACIÓN"),
+    ("X", "TRASLACIÓN"),
+    ("ROLL", "ROTACIÓN"),
+    ("PITCH", "ROTACIÓN"),
+    ("YAW", "ROTACIÓN"),
 ]
 
 
@@ -45,13 +57,12 @@ class Window(QWidget):
         self.position_labels = []
         self.jog_buttons = []
         self.gripper_buttons = []
+        self.axis_id_labels = []
+        self.axis_name_labels = []
 
         self.build_ui()
         self.apply_style()
         self.positions = {}
-        self.ros_timer = QTimer(self)
-        self.ros_timer.timeout.connect(self.update_ros)
-        self.ros_timer.start(40)
         self.backend_status = "Esperando backend"
         
         self.command = [0.0] * 7
@@ -77,6 +88,31 @@ class Window(QWidget):
             self.on_status,
             1,
         )
+        
+        
+        # None indica que el backend todavía no ha confirmado el modo.
+        self.modo_confirmado = None
+        self.solicitud_modo = None
+        self.reintentar_modo_desde = 0.0
+
+        self.cliente_modo = node.create_client(
+            SetBool,
+            "/piper/modo_cartesiano",
+        )
+
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(
+            self.tf_buffer,
+            node,
+            spin_thread=False,
+        )
+
+        self.habilitar_controles(False)
+        self.mode_selector.currentIndexChanged.connect(self.solicitar_modo)
+
+        self.ros_timer = QTimer(self)
+        self.ros_timer.timeout.connect(self.update_ros)
+        self.ros_timer.start(40)
 
     def on_joint_state(self, msg):
         self.positions = dict(zip(msg.name, msg.position))
@@ -92,9 +128,125 @@ class Window(QWidget):
             self.close()
             return
 
-        rclpy.spin_once(self.node, timeout_sec=0.0)
+        # Atender mensajes y respuestas de ROS sin bloquear Qt.
+        for _ in range(8):
+            rclpy.spin_once(self.node, timeout_sec=0.0)
+
+        ahora = time.monotonic()
+        conectado = (
+            self.status_time is not None
+            and ahora - self.status_time < 1.0
+            and self.cliente_modo.service_is_ready()
+        )
+
+        if conectado:
+            self.revisar_solicitud_modo(ahora)
+            if (
+                self.modo_confirmado is None
+                and self.solicitud_modo is None
+                and ahora >= self.reintentar_modo_desde
+            ):
+                self.solicitar_modo(0)
+        else:
+            self.invalidar_modo()
+
+        listo = (
+            conectado
+            and self.modo_confirmado is not None
+            and self.solicitud_modo is None
+            and self.joint_state_time is not None
+            and ahora - self.joint_state_time < 0.5
+        )
+
+        if not listo:
+            self.stop()
+
+        self.habilitar_controles(listo)
         self.publish_command()
         self.update_display()
+
+    def habilitar_controles(self, habilitados):
+        self.mode_selector.setEnabled(habilitados)
+        for button in self.jog_buttons + self.gripper_buttons:
+            button.setEnabled(habilitados)
+
+    def solicitar_modo(self, index):
+        if not self.cliente_modo.service_is_ready():
+            self.invalidar_modo()
+            return
+
+        self.stop()
+        self.publish_command()
+        self.habilitar_controles(False)
+
+        solicitud = SetBool.Request(data=(index == 1))
+
+        try:
+            futuro = self.cliente_modo.call_async(solicitud)
+        except Exception as error:
+            self.node.get_logger().warning(
+                f"No se pudo solicitar el modo: {error}"
+            )
+            self.invalidar_modo()
+            self.reintentar_modo_desde = time.monotonic() + 1.0
+            return
+
+        self.solicitud_modo = (futuro, index, time.monotonic() + 2.0)
+
+    def revisar_solicitud_modo(self, ahora):
+        if self.solicitud_modo is None:
+            return
+
+        futuro, index, limite = self.solicitud_modo
+
+        if futuro.done():
+            self.solicitud_modo = None
+            try:
+                respuesta = futuro.result()
+            except Exception as error:
+                self.node.get_logger().warning(
+                    f"Falló el cambio de modo: {error}"
+                )
+            else:
+                if respuesta.success:
+                    # El backend espera un comando en cero después del cambio.
+                    self.stop()
+                    self.publish_command()
+                    self.modo_confirmado = index
+                    self.actualizar_etiquetas_modo(index)
+                    return
+
+                self.node.get_logger().warning(respuesta.message)
+        elif ahora < limite:
+            return
+        else:
+            self.node.get_logger().warning(
+                "El cambio de modo no respondió a tiempo."
+            )
+
+        self.invalidar_modo()
+        self.reintentar_modo_desde = ahora + 1.0
+
+    def invalidar_modo(self):
+        if self.solicitud_modo is not None:
+            futuro, _, _ = self.solicitud_modo
+            self.cliente_modo.remove_pending_request(futuro)
+            self.solicitud_modo = None
+
+        self.modo_confirmado = None
+        self.actualizar_etiquetas_modo(0)
+        
+    def event(self, event):
+        if event.type() == QEvent.WindowDeactivate and hasattr(self, "command"):
+            self.stop()
+        return super().event(event)
+
+    def closeEvent(self, event):
+        self.ros_timer.stop()
+        self.stop()
+        if rclpy.ok():
+            self.publish_command()
+        super().closeEvent(event)
         
     def update_display(self):
         now = time.monotonic()
@@ -108,14 +260,20 @@ class Window(QWidget):
             and now - self.status_time < 1.0
         )
 
-        if state_is_recent:
-            for index, joint_name in enumerate(
-                ("joint1", "joint2", "joint3", "joint4", "joint5", "joint6")
-            ):
-                if joint_name in self.positions:
-                    degrees = math.degrees(self.positions[joint_name])
-                    self.position_labels[index].setText(f"{degrees:+.1f}°")
+        if state_is_recent and self.modo_confirmado == 0:
+            for index, label in enumerate(self.position_labels, start=1):
+                angulo = self.positions.get(f"joint{index}")
+                label.setText(
+                    f"{math.degrees(angulo):+.1f}°"
+                    if angulo is not None else "—"
+                )
+        elif state_is_recent and self.modo_confirmado == 1:
+            self.actualizar_pose_tcp()
+        else:
+            for label in self.position_labels:
+                label.setText("—")
 
+        if state_is_recent:
             if "joint7" in self.positions and "joint8" in self.positions:
                 width_m = self.positions["joint7"] - self.positions["joint8"]
                 width_mm = max(0.0, min(0.072, width_m)) * 1000.0
@@ -127,6 +285,26 @@ class Window(QWidget):
         else:
             self.status_label.setText("Esperando mensajes de piper_control.")
             self.connection_label.setText("●  ESPERANDO BACKEND")
+    
+    def actualizar_pose_tcp(self):
+        try:
+            tf = self.tf_buffer.lookup_transform("base_link", "TCP", Time())
+            posicion = tf.transform.translation
+            q = tf.transform.rotation
+            rpy = Rotation.from_quat(
+                [q.x, q.y, q.z, q.w]
+            ).as_euler("xyz", degrees=True)
+        except (TransformException, ValueError):
+            for label in self.position_labels:
+                label.setText("—")
+            return
+
+        valores_xyz = (posicion.z, posicion.y, posicion.x)
+        for label, valor in zip(self.position_labels[:3], valores_xyz):
+            label.setText(f"{valor:+.4f} m")
+
+        for label, angulo in zip(self.position_labels[3:], rpy):
+            label.setText(f"{angulo:+.1f}°")
         
     def build_ui(self):
         root = QVBoxLayout(self)
@@ -165,22 +343,33 @@ class Window(QWidget):
 
         section_header = QHBoxLayout()
 
-        section_title = QLabel("ARTICULACIONES")
-        section_title.setObjectName("sectionTitle")
+        self.section_title = QLabel("ARTICULACIONES")
+        self.section_title.setObjectName("sectionTitle")
 
         count = QLabel("6 EJES")
         count.setObjectName("smallTag")
 
-        section_header.addWidget(section_title)
+        section_header.addWidget(self.section_title)
         section_header.addStretch()
+
+        self.mode_selector = QComboBox()
+        self.mode_selector.addItems([
+            "Articular",
+            "Cartesiano TCP",
+        ])
+        section_header.addWidget(self.mode_selector)
         section_header.addWidget(count)
         card_layout.addLayout(section_header)
 
         for index, (joint_id, role) in enumerate(JOINTS):
-            row, position, buttons = self.create_joint_row(
-                index, joint_id, role
+            row, axis_id, axis_name, position, buttons = (
+                self.create_joint_row(index, joint_id, role)
             )
+
             card_layout.addWidget(row)
+
+            self.axis_id_labels.append(axis_id)
+            self.axis_name_labels.append(axis_name)
             self.position_labels.append(position)
             self.jog_buttons.extend(buttons)
 
@@ -270,8 +459,23 @@ class Window(QWidget):
         )
         footer.setObjectName("footer")
         root.addWidget(footer)
-        for button in self.jog_buttons + self.gripper_buttons:
-            button.setEnabled(True)
+            
+    def actualizar_etiquetas_modo(self, index):
+        """Actualiza los nombres visibles de las seis filas."""
+        anterior = self.mode_selector.blockSignals(True)
+        self.mode_selector.setCurrentIndex(index)
+        self.mode_selector.blockSignals(anterior)
+
+        if index == 1:
+            labels = CARTESIAN_AXES
+            self.section_title.setText("TCP · POSE EN BASE / MANDO LOCAL")
+        else:
+            labels = JOINTS
+            self.section_title.setText("ARTICULACIONES")
+
+        for row, (axis_id, axis_name) in enumerate(labels):
+            self.axis_id_labels[row].setText(axis_id)
+            self.axis_name_labels[row].setText(axis_name)
         
     def start(self, index, direction):
         speed = self.speed_slider.value()
@@ -332,7 +536,7 @@ class Window(QWidget):
         layout.addWidget(minus)
         layout.addWidget(plus)
 
-        return row, position, [minus, plus]
+        return row, number, name, position, [minus, plus]
 
     def apply_style(self):
         self.setStyleSheet("""
